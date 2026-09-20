@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f6f8fc;
+      color: #202124;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 30px auto;
+      padding: 0 24px;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(60, 64, 67, 0.18);
+      overflow: hidden;
+    }
+
+    .header {
+      padding: 22px 24px;
+      border-bottom: 1px solid #dadce0;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 500;
+    }
+
+    .table-wrapper {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 850px;
+    }
+
+    th {
+      background: #f8fafd;
+      font-weight: 600;
+      text-align: left;
+      padding: 14px 16px;
+      border-bottom: 1px solid #dadce0;
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid #e8eaed;
+      vertical-align: middle;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover {
+      background: #f8fafd;
+    }
+
+    .action-cell {
+      width: 90px;
+      text-align: center;
+    }
+
+    button {
+      font-size: 14px;
+      padding: 7px 15px;
+      border-radius: 18px;
+      cursor: pointer;
+      background: #ffffff;
+    }
+
+    .edit-button {
+      border: 1px solid #1a73e8;
+      color: #1a73e8;
+    }
+
+    .delete-button {
+      border: 1px solid #d93025;
+      color: #d93025;
+    }
+
+    .empty {
+      padding: 35px;
+      text-align: center;
+      color: #5f6368;
+    }
+
+    .loading {
+      padding: 35px;
+      text-align: center;
+      color: #5f6368;
+    }
+
+    .muted {
+      color: #5f6368;
+    }
+
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  width: 500px;
+  max-width: calc(100% - 40px);
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+}
+
+.modal h2 {
+  margin-top: 0;
+}
+
+.form-field {
+  margin-bottom: 16px;
+}
+
+.form-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.form-field input,
+.form-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.save-button {
+  border: none;
+  background: #1a73e8;
+  color: white;
+}
+
+.cancel-button {
+  border: 1px solid #dadce0;
+  color: #3c4043;
+}
+
+.edit-status {
+  margin-top: 12px;
+  color: #d93025;
+}
+
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <div class="card">
+
+    <div class="header">
+      <h1>Existing Mail Rules</h1>
+    </div>
+
+    <div id="content" class="loading">
+      Loading rules...
+    </div>
+
+  </div>
+
+</div>
+
+<div id="editOverlay" class="modal-overlay">
+
+  <div class="modal">
+
+    <h2>Edit Rule</h2>
+
+    <input type="hidden" id="editRuleId">
+
+    <div class="form-field">
+      <label>From</label>
+      <input type="text" id="editFrom">
+    </div>
+
+    <div class="form-field">
+      <label>Has the words</label>
+      <input type="text" id="editWords">
+    </div>
+
+    <div class="form-field">
+      <label>Move to</label>
+      <select id="editDestination"></select>
+    </div>
+
+    <div class="form-field">
+      <label>Move after</label>
+
+      <select id="editMoveAfter" onchange="updateEditDestinationState()">
+        <option value="10">10 days</option>
+        <option value="50">50 days</option>
+        <option value="100">100 days</option>
+        <option value="never">Never</option>
+      </select>
+    </div>
+
+    <div class="form-field">
+      <label>Delete after</label>
+
+      <select id="editDeleteAfter">
+        <option value="10">10 days</option>
+        <option value="50">50 days</option>
+        <option value="100">100 days</option>
+        <option value="never">Never</option>
+      </select>
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="editApplyExisting">
+
+      <label for="editApplyExisting">
+        Also apply this rule to existing matching emails
+      </label>
+    </div>
+
+    <div id="editStatus" class="edit-status"></div>
+
+    <div class="modal-buttons">
+
+      <button class="cancel-button" onclick="closeEditModal()">
+        CANCEL
+      </button>
+
+      <button class="save-button" onclick="saveEditedRule()">
+        SAVE
+      </button>
+
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+
+document.addEventListener(
+  'DOMContentLoaded',
+  loadRules
+);
+
+
+function loadRules() {
+
+  google.script.run
+    .withSuccessHandler(renderRules)
+    .withFailureHandler(showError)
+    .getRulesForWeb();
+}
+
+
+function renderRules(rules) {
+
+  const container =
+    document.getElementById('content');
+
+
+  if (!rules || rules.length === 0) {
+
+    container.className = 'empty';
+
+    container.innerHTML =
+      'No existing rules.';
+
+    return;
+  }
+
+
+  container.className =
+    'table-wrapper';
+
+
+  let html = `
+    <table>
+
+      <thead>
+        <tr>
+          <th>From</th>
+          <th>Has the words</th>
+          <th>Move</th>
+          <th>Delete</th>
+          <th class="action-cell">Edit</th>
+          <th class="action-cell">Delete</th>
+        </tr>
+      </thead>
+
+      <tbody>
+  `;
+
+
+  rules.forEach(rule => {
+
+    html += `
+      <tr>
+
+        <td>
+          ${escapeHtml(rule.from || '—')}
+        </td>
+
+        <td>
+          ${escapeHtml(rule.words || '—')}
+        </td>
+
+        <td>
+          ${escapeHtml(rule.moveText || '—')}
+        </td>
+
+        <td>
+          ${escapeHtml(rule.deleteText || '—')}
+        </td>
+
+        <td class="action-cell">
+          <button
+            class="edit-button"
+            onclick="editRule('${escapeAttribute(rule.id)}')"
+          >
+            EDIT
+          </button>
+        </td>
+
+        <td class="action-cell">
+          <button
+            class="delete-button"
+            onclick="deleteRule('${escapeAttribute(rule.id)}')"
+          >
+            DELETE
+          </button>
+        </td>
+
+      </tr>
+    `;
+  });
+
+
+  html += `
+      </tbody>
+    </table>
+  `;
+
+
+  container.innerHTML = html;
+}
+
+
+function editRule(ruleId) {
+
+  document.getElementById('editStatus').textContent =
+    'Loading...';
+
+  document.getElementById('editOverlay').style.display =
+    'flex';
+
+  google.script.run
+    .withSuccessHandler(openRuleEditor)
+    .withFailureHandler(function(error) {
+
+      document.getElementById('editStatus').textContent =
+        error && error.message
+          ? error.message
+          : String(error);
+
+    })
+    .getRuleEditorData(ruleId);
+}
+
+
+function openRuleEditor(data) {
+
+  const rule = data.rule;
+
+  document.getElementById('editRuleId').value =
+    rule.id;
+
+  document.getElementById('editFrom').value =
+    rule.from || '';
+
+  document.getElementById('editWords').value =
+    rule.words || '';
+
+  document.getElementById('editMoveAfter').value =
+    rule.moveAfter;
+
+  document.getElementById('editDeleteAfter').value =
+    rule.deleteAfter;
+
+  document.getElementById('editApplyExisting').checked =
+    false;
+
+
+  const destination =
+    document.getElementById('editDestination');
+
+  destination.innerHTML =
+    '<option value="">Select Gmail label</option>';
+
+
+  data.labels.forEach(label => {
+
+    const option =
+      document.createElement('option');
+
+    option.value =
+      label.id;
+
+    option.textContent =
+      label.name;
+
+    if (
+      label.id === rule.destinationLabelId
+    ) {
+      option.selected = true;
+    }
+
+    destination.appendChild(option);
+  });
+
+
+  document.getElementById('editStatus').textContent =
+    '';
+
+  updateEditDestinationState();
+}
+
+function saveEditedRule() {
+
+  const input = {
+
+    id:
+      document.getElementById('editRuleId').value,
+
+    from:
+      document.getElementById('editFrom').value.trim(),
+
+    words:
+      document.getElementById('editWords').value.trim(),
+
+    destinationLabelId:
+      document.getElementById('editDestination').value,
+
+    moveAfter:
+      document.getElementById('editMoveAfter').value,
+
+    deleteAfter:
+      document.getElementById('editDeleteAfter').value,
+
+    applyExisting:
+      document.getElementById('editApplyExisting').checked
+  };
+
+
+  if (!input.from && !input.words) {
+
+    document.getElementById('editStatus').textContent =
+      'Enter From, Has the words, or both.';
+
+    return;
+  }
+
+
+  if (
+    input.moveAfter !== 'never' &&
+    !input.destinationLabelId
+  ) {
+
+    document.getElementById('editStatus').textContent =
+      'Select a destination label.';
+
+    return;
+  }
+
+
+  document.getElementById('editStatus').textContent =
+    'Saving...';
+
+
+  google.script.run
+    .withSuccessHandler(function(result) {
+
+      closeEditModal();
+
+      // Refresh the table so the updated values appear.
+      loadRules();
+
+    })
+    .withFailureHandler(function(error) {
+
+      document.getElementById('editStatus').textContent =
+        error && error.message
+          ? error.message
+          : String(error);
+
+    })
+    .updateRuleFromWeb(input);
+}
+
+
+function closeEditModal() {
+
+  document.getElementById('editOverlay').style.display =
+    'none';
+
+  document.getElementById('editStatus').textContent =
+    '';
+}
+
+
+function updateEditDestinationState() {
+
+  const moveAfter =
+    document.getElementById('editMoveAfter').value;
+
+  document.getElementById('editDestination').disabled =
+    moveAfter === 'never';
+}
+
+
+
+function deleteRule(ruleId) {
+
+  const confirmed = confirm(
+    'Delete this rule?\n\nExisting emails will not be deleted.'
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function(result) {
+
+      // Reload the table after deletion.
+      loadRules();
+
+    })
+    .withFailureHandler(function(error) {
+
+      alert(
+        'Unable to delete rule:\n' +
+        (
+          error && error.message
+            ? error.message
+            : error
+        )
+      );
+
+    })
+    .deleteRuleFromWeb(ruleId);
+}
+
+
+function showError(error) {
+
+  const container =
+    document.getElementById('content');
+
+  container.className =
+    'empty';
+
+  container.textContent =
+    'Error loading rules: ' +
+    (
+      error && error.message
+        ? error.message
+        : error
+    );
+}
+
+
+function escapeHtml(value) {
+
+  const div =
+    document.createElement('div');
+
+  div.textContent =
+    String(value);
+
+  return div.innerHTML;
+}
+
+
+function escapeAttribute(value) {
+
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'");
+}
+
+</script>
+
+
+</body>
+</html>
