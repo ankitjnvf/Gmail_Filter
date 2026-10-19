@@ -54,7 +54,14 @@ Important entries:
 - `INTERNAL_LABEL_PREFIX`
 - `TRIGGER_FUNCTION`
 - `VALID_DELAYS`
-- `MAX_RULES_ON_CARD`
+- `EXECUTION_HISTORY_DAYS` (10)
+- `EXECUTION_LOG_KEY` (`MR_EXECUTION_LOG`)
+- `AUTOMATION_HEALTH_KEY` (`MR_AUTOMATION_HEALTH`)
+- `EXECUTION_STALE_MS` (15 minutes)
+- `WORKER_RUNTIME_BUDGET_MS` (5 minutes)
+- `MANUAL_RUNTIME_BUDGET_MS` (20 seconds)
+- `MESSAGE_THROTTLE_MS` (500 ms)
+- `QUOTA_RETRY_WAIT_MS` (15 seconds)
 - `DAY_MS`
 
 The visible delay dropdown values are in:
@@ -85,21 +92,25 @@ Current rule inputs are:
 
 - From
 - Has the words
+- Has Attachment (additional criterion; From or Has the words is still mandatory)
 - Destination label
 - Move after
 - Delete after
 - Apply to existing emails
+- Remove previous labels
 
 If a new field is added, review all of these locations in `Code.gs`:
 
 - `buildRuleManagerCard_()` — create form
-- `editRule()` — legacy/sidebar edit form
+- `refreshCreateMatchCount()` / `countExistingMatchingMessages_()` — live search count
 - `readRuleForm_()` — reads Gmail-card fields
 - `validateRuleInput_()` — validation
 - `saveRuleFromCard()` — new rule object
 - `getRuleEditorData()` — data sent to web editor
 - `updateRuleFromWeb()` — web edit handling
-- processing functions if the field affects behavior
+- `createTrackingFilter_()` and `buildExistingSearchQuery_()` if matching changes
+- `processTrackedMessage_()` if move/delete/label behavior changes
+- `getRulesForWeb()` for displayed rule data
 
 Also update `Rules.html`:
 
@@ -120,7 +131,7 @@ There are two matching paths and they must remain consistent.
 
 Function:
 
-`createTrackingFilter_(from, words, trackingLabelId)`
+`createTrackingFilter_(from, words, hasAttachment, trackingLabelId)`
 
 This creates the Gmail filter that enrolls future incoming mail.
 
@@ -128,6 +139,7 @@ Current mapping:
 
 - `from` -> Gmail filter `from`
 - `words` -> Gmail filter `query`
+- `hasAttachment` -> Gmail filter `hasAttachment: true` when selected
 
 ### Existing mail
 
@@ -135,7 +147,7 @@ Function:
 
 `buildExistingSearchQuery_(rule)`
 
-This builds the Gmail search used for `Apply to existing emails`.
+This builds the Gmail search used for `Apply to existing emails`, for the live matching count, and for the activity indicator. It adds `has:attachment` when requested.
 
 Current exclusions:
 
@@ -159,17 +171,21 @@ Otherwise future incoming mail and existing-mail backfill can behave differently
 
 Rule creation generates:
 
-- `__DMR__TRACK_<id>`
-- `__DMR__MOVED_<id>`
+- `ZZ_TRACK_<id>`
+- `ZZ_MOVED_<id>`
 
 Functions involved:
 
 - `createHiddenLabel_()`
 - `saveRuleFromCard()`
+- `hideExistingInternalLabelsOnce_()`
+- `resetInternalLabelHideMigration_()` (maintenance helper)
 
 The prefix is controlled by:
 
 `CFG.INTERNAL_LABEL_PREFIX`
+
+The current prefix is `ZZ_`. On the first sidebar home/message entry, `hideExistingInternalLabelsOnce_()` attempts to hide matching existing internal labels, controlled by user-property marker `MR_INTERNAL_LABELS_HIDDEN_V1`. It is a visibility pass, **not** a conversion of old rule keys or label IDs.
 
 Changing this prefix does not rename labels already created by old rules.
 
@@ -192,7 +208,7 @@ Storage location:
 
 Property key format:
 
-`DMR_RULE_<rule-id>`
+`MR_RULE_<rule-id>`
 
 Do not move rules to Script Properties just because `WEB_APP_URL` uses Script Properties.
 
@@ -219,7 +235,7 @@ Current sequence:
 6. create hidden MOVED label;
 7. create Gmail matching filter;
 8. resolve destination label;
-9. construct rule object;
+9. construct rule object including `hasAttachment`, `removePreviousLabels`, and destination label ID/name;
 10. save rule;
 11. ensure daily trigger;
 12. leave `backfillPending = true` if Apply to existing was requested;
@@ -254,7 +270,7 @@ Do not clear `backfillPending` before `applyRuleToExisting_()` succeeds, or a fa
 Main functions:
 
 - `processDelayedMailRules()`
-- `runProcessingWorker_()`
+- `runProcessingWorker_(runType, runtimeBudgetMs)`
 - `processSingleRule_()`
 - `listTrackedMessageIds_()`
 - `processTrackedMessage_()`
@@ -263,10 +279,13 @@ Main functions:
 
 Responsibilities:
 
-- acquire user lock;
+- acquire user lock (skip if already held);
+- log a `Running` execution record with `Manual` or `Daily` type;
 - process pending backfills;
 - reload rules;
-- process every rule;
+- process tracked messages within the worker deadline;
+- collect errors and determine `Success`, `Failure`, or `Partial`;
+- save an automation-health snapshot including `trackedAtRunCount`;
 - release lock.
 
 ### `processTrackedMessage_()`
@@ -283,6 +302,16 @@ Current order is important:
 
 Do not move the delete check below the move check unless the product behavior is intentionally being changed.
 
+### Safeguards and recorded status
+
+`CFG.WORKER_RUNTIME_BUDGET_MS` is the normal 5-minute budget. `RUN NOW` passes `CFG.MANUAL_RUNTIME_BUDGET_MS` (20 seconds). The worker checks its deadline between rules and messages (a currently-running backfill call is not interrupted mid-call). `processSingleRule_()` throttles visits by 500 ms and retries recognized quota/rate-limit errors once after a 15-second wait when sufficient time remains.
+
+The tracked count is a **sum of message entries visited/attempted across rules**, including entries not yet due for an action. It is not the count of messages moved/deleted. **Backfill** is the count of rules whose `backfillPending` flag remains true.
+
+A run with collected errors is `Failure`. A manual run that stops early without collected errors is `Partial`. A daily run that stops early without collected errors can still be `Success`; therefore `Success` is not a proof that all queued messages were processed. A `Running` entry older than 15 minutes is converted to `Interrupted` when history is read. These statuses are records/diagnostics, not transactional guarantees.
+
+Functions: `startExecutionRecord_()`, `completeExecutionRecord_()`, `getExecutionHistory_()`, `saveExecutionHistory_()`, `getAutomationStatus_()`, `getAutomationHealthSnapshot_()`, `saveAutomationHealthSnapshot_()`, `getExecutionHistoryForWeb()` and `getNextExpectedDailyRunText_()`. History is retained for 10 days in User Properties under `MR_EXECUTION_LOG`; the latest health snapshot is stored under `MR_AUTOMATION_HEALTH`.
+
 ---
 
 ## 11. Moving messages
@@ -296,19 +325,23 @@ When move is final (`Delete after = Never`):
 - destination label is added;
 - `INBOX` is removed;
 - TRACK is removed;
-- MOVED is removed.
+- MOVED is removed;
+- if `removePreviousLabels` is true, other ordinary user labels on the message are removed, but the destination is retained.
 
 When deletion will happen later:
 
 - destination label is added;
 - MOVED is added;
 - `INBOX` is removed;
-- TRACK remains for future deletion.
+- TRACK remains for future deletion;
+- if `removePreviousLabels` is true, other ordinary user labels are removed but the destination and internal tracking labels are retained.
 
 If changing movement behavior, preserve the difference between:
 
 - move-only rules;
 - move-then-delete rules.
+
+`getOrdinaryUserLabelIds_()` and `getPreviousUserLabelIdsToRemove_()` identify previous user labels. System labels are not removed by this option. `ZZ_`-prefixed labels are excluded. These removals happen **only when a move is due**.
 
 ---
 
@@ -330,22 +363,17 @@ Do not replace this with a permanent-delete API unless that change is explicitly
 
 ## 13. Manual processing
 
-Function:
+Function: `runRulesNowFromCard()` (sidebar button text **RUN NOW**).
 
-`runRulesNowFromCard()`
+It directly calls:
 
-Current behavior:
+```javascript
+runProcessingWorker_('Manual', CFG.MANUAL_RUNTIME_BUDGET_MS);
+```
 
-`runProcessingWorker_()` is called directly.
+The manual budget is 20 seconds. If the worker reaches its limit before all work is visited and no other error is collected, it records `Partial` and explains that remaining messages will be handled during the next scheduled run. If errors occur, it records `Failure` and directs the user to Recent Executions / Existing Rules.
 
-Do not restore a one-time trigger such as:
-
-- `scheduleWorkerSoon_()`
-- `runDelayedMailWorker()`
-
-unless there is a specific new reason to redesign processing.
-
-The current architecture intentionally avoids creating temporary time-based triggers.
+The current implementation does **not** create a temporary one-time trigger. Do not reintroduce one-time scheduling functions such as `scheduleWorkerSoon_()` / `runDelayedMailWorker()` without intentionally redesigning this behavior.
 
 ---
 
@@ -408,7 +436,12 @@ Frontend:
 
 `Rules.html` calls:
 
-`getRulesForWeb()`
+- `getRulesForWeb()` for the rules table and live destination-label name display;
+- `getExecutionHistoryForWeb()` for the last 10 days' execution table.
+
+The rule table shows Has Attachment, Remove Previous Labels, and a green/red activity symbol alongside From. `hasRuleMatchedWithinLastYear_()` returns green for any rule created within 365 days, even without a match; for older rules, it searches for at least one matching email within the last year. The symbol is **not a processing-success indicator**.
+
+In `getRulesForWeb()`, destination label IDs are mapped to their *current* Gmail label names in one fetch. When a name changed it updates `destinationLabelName` using `saveRule_()` (without touching the destination ID or filter). A missing label displays `[Missing label] ...`. A label-list API failure falls back to the stored name. `getRuleEditorData()` also obtains live labels for the dropdown.
 
 ### Edit
 
@@ -431,7 +464,7 @@ Function names must stay synchronized between the HTML and `Code.gs`.
 
 The current web edit logic is intentionally conservative.
 
-If `From` / `Has the words` did not change:
+If `From` / `Has the words` / `Has Attachment` did not change:
 
 - no new Gmail filter is created.
 
@@ -447,20 +480,11 @@ Preserve this sequence unless there is a tested reason to alter it.
 
 ---
 
-## 17. Legacy Gmail-card edit code
+## 17. Gmail-card form and inactive legacy features
 
-`Code.gs` still contains:
+The current `Code.gs` uses `buildRuleManagerCard_()` for the live Create Rule card; `refreshCreateMatchCount()` updates the matching-email counter. The main action buttons are **SAVE**, **RUN NOW**, and **RULES**. A separate web page (`Rules.html`) handles edit/delete. The old inline Existing Rules card and legacy `editRule()`, `updateRuleFromCard()`, and `deleteRuleFromCard()` functions described in earlier versions are **not present in this final code**; do not try to edit them.
 
-- `editRule()`
-- `updateRuleFromCard()`
-- `deleteRuleFromCard()`
-- code that builds `listSection`
-
-But the line that adds `listSection` to the main Gmail card is currently commented out.
-
-Therefore, the normal current UI uses the separate Existing Rules page.
-
-Do not assume unused-looking functions are safe to delete without first checking whether another code path still references them.
+Keep form field names in sync across `readRuleForm_()`, the web editor data, and `Rules.html`. The sidebar also shows `Next`, `Backfill`, `Tracked`, at most three recent executions, and a developer/LinkedIn credit. As with any seemingly unused code, check references before removing functions in a future version.
 
 ---
 
@@ -495,8 +519,9 @@ Each copied installation should have its own Script Property value.
 
 The page currently contains:
 
-- Existing Mail Rules table
-- Edit modal
+- Existing Mail Rules table with activity indicator, Has Attachment, and Remove Previous Labels
+- last-10-days Execution History table
+- Edit modal including Has Attachment / Remove Previous Labels
 - client-side validation
 - `google.script.run` calls
 - HTML escaping helpers
@@ -523,7 +548,7 @@ For code changes:
 4. test the changed function;
 5. refresh Gmail;
 6. verify rule creation;
-7. verify `RUN RULES NOW`;
+7. verify `RUN NOW`;
 8. verify Existing Rules page if web-related functions changed.
 
 If the changed code is used by the web app, update the existing web-app deployment to a new version.
@@ -562,12 +587,12 @@ Before considering a modified version complete, verify:
 - Rule appears in Existing Rules page.
 - Edit works.
 - Delete works.
-- `RUN RULES NOW` completes.
+- `RUN NOW` completes or reports a documented `Partial`/`Failure` result.
 - Apply-to-existing works.
-- Move removes `INBOX` and adds destination label.
+- Move removes `INBOX` and adds destination label; optional previous-label removal excludes destination/internal/system labels.
 - Delete sends the message to Trash.
 - Daily trigger exists only once.
-- `SHOW EXISTING RULES` opens the correct project's web page.
+- `RULES` opens the correct project's web page, with updated label names and execution history.
 - No temporary worker triggers accumulate.
 - `WEB_APP_URL` still points to the active `/exec` deployment.
 
@@ -588,3 +613,5 @@ Do not make these casually:
 - attaching the solution to a separate Google Cloud project solely for URL discovery.
 
 Any of these should be developed and tested as a new version rather than as a small patch.
+
+**Fresh-installation scope:** These instructions describe the current codebase. Its `MR_RULE_` property prefix and `ZZ_` Gmail labels are not compatible with the old `DMR_RULE_` / `__DMR__` names by simple substitution; this guide does not define a migration of existing older accounts.

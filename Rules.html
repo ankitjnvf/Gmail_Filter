@@ -24,6 +24,10 @@
       overflow: hidden;
     }
 
+    .execution-history-card {
+      margin-top: 24px;
+    }
+
     .header {
       padding: 22px 24px;
       border-bottom: 1px solid #dadce0;
@@ -42,7 +46,7 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 850px;
+      min-width: 1120px;
     }
 
     th {
@@ -107,91 +111,100 @@
       color: #5f6368;
     }
 
-.modal-overlay {
-  display: none;
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
+    .rule-status-active {
+      color: #188038;
+      font-weight: 700;
+      margin-right: 6px;
+    }
 
-.modal {
-  width: 500px;
-  max-width: calc(100% - 40px);
-  background: white;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
-}
+    .rule-status-stale {
+      color: #d93025;
+      font-weight: 700;
+      margin-right: 6px;
+    }
 
-.modal h2 {
-  margin-top: 0;
-}
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
 
-.form-field {
-  margin-bottom: 16px;
-}
+    .modal {
+      width: 500px;
+      max-width: calc(100% - 40px);
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+    }
 
-.form-field label {
-  display: block;
-  margin-bottom: 6px;
-  font-weight: 600;
-}
+    .modal h2 {
+      margin-top: 0;
+    }
 
-.form-field input,
-.form-field select {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 9px 10px;
-  border: 1px solid #dadce0;
-  border-radius: 6px;
-}
+    .form-field {
+      margin-bottom: 16px;
+    }
 
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 16px 0;
-}
+    .form-field label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
 
-.checkbox-row input {
-  width: auto;
-}
+    .form-field input,
+    .form-field select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 9px 10px;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+    }
 
-.modal-buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
-}
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 16px 0;
+    }
 
-.save-button {
-  border: none;
-  background: #1a73e8;
-  color: white;
-}
+    .checkbox-row input {
+      width: auto;
+    }
 
-.cancel-button {
-  border: 1px solid #dadce0;
-  color: #3c4043;
-}
+    .modal-buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 20px;
+    }
 
-.edit-status {
-  margin-top: 12px;
-  color: #d93025;
-}
+    .save-button {
+      border: none;
+      background: #1a73e8;
+      color: white;
+    }
 
+    .cancel-button {
+      border: 1px solid #dadce0;
+      color: #3c4043;
+    }
+
+    .edit-status {
+      margin-top: 12px;
+      color: #d93025;
+    }
   </style>
 </head>
 
 <body>
 
 <div class="container">
-
   <div class="card">
-
     <div class="header">
       <h1>Existing Mail Rules</h1>
     </div>
@@ -199,15 +212,21 @@
     <div id="content" class="loading">
       Loading rules...
     </div>
-
   </div>
 
+  <div class="card execution-history-card">
+    <div class="header">
+      <h1>Execution History — Last 10 Days</h1>
+    </div>
+
+    <div id="executionHistory" class="loading">
+      Loading execution history...
+    </div>
+  </div>
 </div>
 
 <div id="editOverlay" class="modal-overlay">
-
   <div class="modal">
-
     <h2>Edit Rule</h2>
 
     <input type="hidden" id="editRuleId">
@@ -222,6 +241,13 @@
       <input type="text" id="editWords">
     </div>
 
+    <div class="checkbox-row">
+      <input type="checkbox" id="editHasAttachment">
+      <label for="editHasAttachment">
+        Has Attachment
+      </label>
+    </div>
+
     <div class="form-field">
       <label>Move to</label>
       <select id="editDestination"></select>
@@ -229,8 +255,9 @@
 
     <div class="form-field">
       <label>Move after</label>
-
       <select id="editMoveAfter" onchange="updateEditDestinationState()">
+        <option value="1">1 day</option>
+        <option value="5">5 days</option>
         <option value="10">10 days</option>
         <option value="50">50 days</option>
         <option value="100">100 days</option>
@@ -240,8 +267,9 @@
 
     <div class="form-field">
       <label>Delete after</label>
-
       <select id="editDeleteAfter">
+        <option value="1">1 day</option>
+        <option value="5">5 days</option>
         <option value="10">10 days</option>
         <option value="50">50 days</option>
         <option value="100">100 days</option>
@@ -251,16 +279,21 @@
 
     <div class="checkbox-row">
       <input type="checkbox" id="editApplyExisting">
-
       <label for="editApplyExisting">
         Also apply this rule to existing matching emails
+      </label>
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="editRemovePreviousLabels">
+      <label for="editRemovePreviousLabels">
+        Remove previous labels
       </label>
     </div>
 
     <div id="editStatus" class="edit-status"></div>
 
     <div class="modal-buttons">
-
       <button class="cancel-button" onclick="closeEditModal()">
         CANCEL
       </button>
@@ -268,89 +301,154 @@
       <button class="save-button" onclick="saveEditedRule()">
         SAVE
       </button>
-
     </div>
-
   </div>
-
 </div>
 
 <script>
-
 document.addEventListener(
   'DOMContentLoaded',
-  loadRules
+  function() {
+    loadRules();
+    loadExecutionHistory();
+  }
 );
 
-
 function loadRules() {
-
   google.script.run
     .withSuccessHandler(renderRules)
     .withFailureHandler(showError)
     .getRulesForWeb();
 }
 
+function loadExecutionHistory() {
+  google.script.run
+    .withSuccessHandler(renderExecutionHistory)
+    .withFailureHandler(showExecutionHistoryError)
+    .getExecutionHistoryForWeb();
+}
 
-function renderRules(rules) {
 
+function renderExecutionHistory(history) {
   const container =
-    document.getElementById('content');
+    document.getElementById('executionHistory');
 
-
-  if (!rules || rules.length === 0) {
-
+  if (!history || history.length === 0) {
     container.className = 'empty';
-
     container.innerHTML =
-      'No existing rules.';
-
+      'No executions recorded in the last 10 days.';
     return;
   }
 
-
-  container.className =
-    'table-wrapper';
-
+  container.className = 'table-wrapper';
 
   let html = `
     <table>
-
       <thead>
         <tr>
-          <th>From</th>
-          <th>Has the words</th>
-          <th>Move</th>
-          <th>Delete</th>
-          <th class="action-cell">Edit</th>
-          <th class="action-cell">Delete</th>
+          <th>Sr. No.</th>
+          <th>Date / Time</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Error</th>
         </tr>
       </thead>
 
       <tbody>
   `;
 
-
-  rules.forEach(rule => {
-
+    history.forEach((entry, index) => {
     html += `
       <tr>
-
         <td>
-          ${escapeHtml(rule.from || '—')}
+          ${index + 1}
         </td>
 
         <td>
-          ${escapeHtml(rule.words || '—')}
+          ${escapeHtml(entry.timeText || '—')}
         </td>
 
         <td>
-          ${escapeHtml(rule.moveText || '—')}
+          ${escapeHtml(entry.runType || 'Unknown')}
         </td>
 
         <td>
-          ${escapeHtml(rule.deleteText || '—')}
+          ${escapeHtml(entry.status || 'Unknown')}
         </td>
+
+        <td>
+          ${escapeHtml(entry.error || '—')}
+        </td>
+      </tr>
+    `;
+  });
+
+  html += `
+      </tbody>
+    </table>
+  `;
+
+  container.innerHTML = html;
+}
+
+
+function showExecutionHistoryError(error) {
+  const container =
+    document.getElementById('executionHistory');
+
+  container.className = 'empty';
+
+  container.textContent =
+    'Error loading execution history: ' +
+    (
+      error && error.message
+        ? error.message
+        : error
+    );
+}
+
+function renderRules(rules) {
+  const container = document.getElementById('content');
+
+  if (!rules || rules.length === 0) {
+    container.className = 'empty';
+    container.innerHTML = 'No existing rules.';
+    return;
+  }
+
+  container.className = 'table-wrapper';
+
+  let html = `
+    <table>
+      <thead>
+        <tr>
+          <th>From</th>
+          <th>Has the words</th>
+          <th>Has<br>Attachment</th>
+          <th>Move</th>
+          <th>Delete</th>
+          <th>Remove Previous<br>Labels</th>
+          <th class="action-cell">Edit</th>
+          <th class="action-cell">Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  rules.forEach(rule => {
+    html += `
+      <tr>
+        <td>${
+        rule.matchedWithinLastYear
+        ? '<span class="rule-status-active" title="Matched in last 1 year">✓</span>'
+        : '<span class="rule-status-stale" title="No match in last 1 year">✕</span>'
+        }
+        ${escapeHtml(rule.from || '—')}</td>
+        <td>${escapeHtml(rule.words || '—')}</td>
+        <td>${escapeHtml(rule.hasAttachmentText || 'No')}</td>
+        <td>${escapeHtml(rule.moveText || '—')}</td>
+        <td>${escapeHtml(rule.deleteText || '—')}</td>
+        <td>${escapeHtml(rule.removePreviousLabelsText || 'No')}</td>
 
         <td class="action-cell">
           <button
@@ -364,110 +462,74 @@ function renderRules(rules) {
         <td class="action-cell">
           <button
             class="delete-button"
-            onclick="deleteRule('${escapeAttribute(rule.id)}')"
+            onclick="deleteRule('${escapeAttribute(rule.id)}', this)"
           >
             DELETE
           </button>
         </td>
-
       </tr>
     `;
   });
-
 
   html += `
       </tbody>
     </table>
   `;
 
-
   container.innerHTML = html;
 }
 
-
 function editRule(ruleId) {
-
-  document.getElementById('editStatus').textContent =
-    'Loading...';
-
-  document.getElementById('editOverlay').style.display =
-    'flex';
+  document.getElementById('editStatus').textContent = 'Loading...';
+  document.getElementById('editOverlay').style.display = 'flex';
 
   google.script.run
     .withSuccessHandler(openRuleEditor)
     .withFailureHandler(function(error) {
-
       document.getElementById('editStatus').textContent =
-        error && error.message
-          ? error.message
-          : String(error);
-
+        error && error.message ? error.message : String(error);
     })
     .getRuleEditorData(ruleId);
 }
 
-
 function openRuleEditor(data) {
-
   const rule = data.rule;
 
-  document.getElementById('editRuleId').value =
-    rule.id;
+  document.getElementById('editRuleId').value = rule.id;
+  document.getElementById('editFrom').value = rule.from || '';
+  document.getElementById('editWords').value = rule.words || '';
+  document.getElementById('editHasAttachment').checked =
+    Boolean(rule.hasAttachment);
+  document.getElementById('editMoveAfter').value = rule.moveAfter;
+  document.getElementById('editDeleteAfter').value = rule.deleteAfter;
+  document.getElementById('editApplyExisting').checked = false;
+  document.getElementById('editRemovePreviousLabels').checked =
+    Boolean(rule.removePreviousLabels);
 
-  document.getElementById('editFrom').value =
-    rule.from || '';
-
-  document.getElementById('editWords').value =
-    rule.words || '';
-
-  document.getElementById('editMoveAfter').value =
-    rule.moveAfter;
-
-  document.getElementById('editDeleteAfter').value =
-    rule.deleteAfter;
-
-  document.getElementById('editApplyExisting').checked =
-    false;
-
-
-  const destination =
-    document.getElementById('editDestination');
+  const destination = document.getElementById('editDestination');
 
   destination.innerHTML =
     '<option value="">Select Gmail label</option>';
 
-
   data.labels.forEach(label => {
+    const option = document.createElement('option');
 
-    const option =
-      document.createElement('option');
+    option.value = label.id;
+    option.textContent = label.name;
 
-    option.value =
-      label.id;
-
-    option.textContent =
-      label.name;
-
-    if (
-      label.id === rule.destinationLabelId
-    ) {
+    if (label.id === rule.destinationLabelId) {
       option.selected = true;
     }
 
     destination.appendChild(option);
   });
 
-
-  document.getElementById('editStatus').textContent =
-    '';
-
+  document.getElementById('editStatus').textContent = '';
   updateEditDestinationState();
 }
 
 function saveEditedRule() {
-
   const input = {
-
     id:
       document.getElementById('editRuleId').value,
 
@@ -476,6 +538,9 @@ function saveEditedRule() {
 
     words:
       document.getElementById('editWords').value.trim(),
+
+    hasAttachment:
+      document.getElementById('editHasAttachment').checked,
 
     destinationLabelId:
       document.getElementById('editDestination').value,
@@ -487,68 +552,47 @@ function saveEditedRule() {
       document.getElementById('editDeleteAfter').value,
 
     applyExisting:
-      document.getElementById('editApplyExisting').checked
+      document.getElementById('editApplyExisting').checked,
+
+    removePreviousLabels:
+      document.getElementById('editRemovePreviousLabels').checked
   };
 
-
   if (!input.from && !input.words) {
-
     document.getElementById('editStatus').textContent =
       'Enter From, Has the words, or both.';
-
     return;
   }
-
 
   if (
     input.moveAfter !== 'never' &&
     !input.destinationLabelId
   ) {
-
     document.getElementById('editStatus').textContent =
       'Select a destination label.';
-
     return;
   }
 
-
-  document.getElementById('editStatus').textContent =
-    'Saving...';
-
+  document.getElementById('editStatus').textContent = 'Saving...';
 
   google.script.run
     .withSuccessHandler(function(result) {
-
       closeEditModal();
-
-      // Refresh the table so the updated values appear.
       loadRules();
-
     })
     .withFailureHandler(function(error) {
-
       document.getElementById('editStatus').textContent =
-        error && error.message
-          ? error.message
-          : String(error);
-
+        error && error.message ? error.message : String(error);
     })
     .updateRuleFromWeb(input);
 }
 
-
 function closeEditModal() {
-
-  document.getElementById('editOverlay').style.display =
-    'none';
-
-  document.getElementById('editStatus').textContent =
-    '';
+  document.getElementById('editOverlay').style.display = 'none';
+  document.getElementById('editStatus').textContent = '';
 }
 
-
 function updateEditDestinationState() {
-
   const moveAfter =
     document.getElementById('editMoveAfter').value;
 
@@ -556,10 +600,7 @@ function updateEditDestinationState() {
     moveAfter === 'never';
 }
 
-
-
-function deleteRule(ruleId) {
-
+function deleteRule(ruleId, button) {
   const confirmed = confirm(
     'Delete this rule?\n\nExisting emails will not be deleted.'
   );
@@ -570,13 +611,33 @@ function deleteRule(ruleId) {
 
   google.script.run
     .withSuccessHandler(function(result) {
+      const row =
+        button && button.closest
+          ? button.closest('tr')
+          : null;
 
-      // Reload the table after deletion.
-      loadRules();
+      if (row) {
+        row.remove();
+      }
 
+      const tbody =
+        document.querySelector(
+          '#content table tbody'
+        );
+
+      if (
+        tbody &&
+        tbody.children.length === 0
+      ) {
+        const container =
+          document.getElementById('content');
+
+        container.className = 'empty';
+        container.innerHTML =
+          'No existing rules.';
+      }
     })
     .withFailureHandler(function(error) {
-
       alert(
         'Unable to delete rule:\n' +
         (
@@ -585,19 +646,14 @@ function deleteRule(ruleId) {
             : error
         )
       );
-
     })
     .deleteRuleFromWeb(ruleId);
 }
 
-
 function showError(error) {
+  const container = document.getElementById('content');
 
-  const container =
-    document.getElementById('content');
-
-  container.className =
-    'empty';
+  container.className = 'empty';
 
   container.textContent =
     'Error loading rules: ' +
@@ -608,28 +664,18 @@ function showError(error) {
     );
 }
 
-
 function escapeHtml(value) {
-
-  const div =
-    document.createElement('div');
-
-  div.textContent =
-    String(value);
-
+  const div = document.createElement('div');
+  div.textContent = String(value);
   return div.innerHTML;
 }
 
-
 function escapeAttribute(value) {
-
   return String(value)
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "\\'");
 }
-
 </script>
-
 
 </body>
 </html>

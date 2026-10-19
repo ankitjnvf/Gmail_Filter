@@ -22,7 +22,8 @@
       "name": "Mail Filter",
       "logoUrl": "https://www.gstatic.com/images/branding/product/2x/gmail_48dp.png",
       "openLinkUrlPrefixes": [
-        "https://script.google.com/macros/s/"
+        "https://script.google.com/macros/s/",
+        "https://www.linkedin.com/"
       ],
       "homepageTrigger": {
         "runFunction": "onHomePage",
