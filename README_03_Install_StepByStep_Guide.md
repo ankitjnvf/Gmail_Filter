@@ -496,9 +496,9 @@ Open:
 
 If the sidebar is collapsed, expand the add-on area first.
 
-The Mail Filter card should appear. The current action buttons are **SAVE**, **RUN NOW**, and **RULES**. The sidebar also displays **Matching existing emails**, **Next**, **Backfill**, **Tracked**, up to three **Recent Executions**, and the developer credit.
+The Mail Filter card should appear. The current action buttons are **SAVE**, **RUN NOW**, and **RULES**. The sidebar also displays **Matching existing emails**, **Next**, **Backfill**, **Moved**, **Deleted**, **Failed**, up to three **Recent Executions**, and the developer credit with LinkedIn/GitHub links.
 
-**Next** is an estimated 2–3 AM daily window. **Backfill** counts rules still pending existing-mail enrollment, while **Tracked** is the count of tracked-message entries examined in the most recent recorded worker run (not necessarily unique emails moved or deleted).
+**Next** indicates the 2–5 AM scheduled nighttime window. **Backfill** counts rules awaiting existing-mail enrollment. **Moved**, **Deleted**, and **Failed** show the most recent Run Now counts when that was the latest run; after a scheduled run they show the cumulative counts for the scheduled night. The nightly totals are not increased by manual runs.
 
 ---
 
@@ -532,17 +532,20 @@ If you see the button:
 
 click it once.
 
-After the daily trigger exists, this button should no longer be necessary.
+After the hourly trigger exists, this button should no longer be necessary.
 
-The code also checks for the trigger when a rule is saved, but explicitly enabling it during installation is a useful setup check. Once enabled, the sidebar's **Next** status estimates the next 2–3 AM processing window; it does not confirm that the scheduler has already run.
+The code also checks for the trigger when a rule is saved, but explicitly enabling it during installation is a useful setup check. Once enabled, the sidebar's **Next** status estimates the next 2–5 AM processing window; it does not confirm that the scheduler has already run.
 
 ### Current daily-run time
 
-The current code creates the daily trigger with:
+The current code creates the hourly trigger with:
 
 ```javascript
-.atHour(2)
+.timeBased()
+.everyHours(1)
 ```
+
+`processDelayedMailRules()` allows processing only in local hours 2, 3, and 4.
 
 and the supplied `appsscript.json` uses the project timezone:
 
@@ -550,9 +553,9 @@ and the supplied `appsscript.json` uses the project timezone:
 America/Chicago
 ```
 
-Therefore, the daily processor is currently scheduled for the **2 AM hour in the project's current timezone**.
+Therefore, the hourly trigger checks the handler throughout the day, but processing takes place only in the **2–5 AM local window**, allowing up to three scheduled runs.
 
-Apps Script does not guarantee execution at exactly 2:00 AM. The daily run may occur at some point within the 2 AM–3 AM local-time window.
+Apps Script chooses the execution minute of the hourly trigger; the three nighttime runs are not guaranteed to start at exactly 2:00, 3:00, or 4:00 AM. An existing once-daily trigger must be deleted in Apps Script Triggers and recreated by running `enableDailyProcessing()`; changing the source alone will not reschedule it.
 
 If the project timezone is changed later, the trigger's local schedule follows that project timezone.
 
@@ -630,7 +633,7 @@ If the page opens, the following are working together:
 - `doGet()`;
 - `Rules.html`.
 
-The page now includes Has Attachment and Remove Previous Labels columns, a green/red indicator alongside From, and **Execution History — Last 10 Days**. The activity indicator is not confirmation of successful processing: rules created within 365 days display green even without a match; older rules display green only when a Gmail search finds a matching message within the past year. The history may show `Running`, `Success`, `Failure`, `Partial`, or `Interrupted`. In particular, a daily `Success` can still reflect a run that stopped early without a recorded error; `Partial` denotes a manual run that reached its short budget without other errors.
+The page now includes Has Attachment and Remove Previous Labels columns, a green/red indicator alongside From, and **Execution History — Last 10 Days**. The activity indicator is not confirmation of successful processing: rules created within 365 days display green even without a match; older rules display green only when a Gmail search finds a matching message within the past year. The history may show `Running`, `Success`, `Failure`, `Partial`, or `Interrupted`. In version 3.0, `Success` requires no collected error or early stop; `Partial` covers early stops or errors with successful actions; and `Failure` covers errors without successful actions (or an uncaught exception). The classification does not perform a separate mailbox-wide completeness scan.
 
 ---
 
@@ -947,7 +950,7 @@ Confirm that the edit window opens and shows the rule's current values, includin
 
 Change one safe field, for example:
 
-- change `Move after` from `10 days` to `50 days`, or
+- change `Move after` from `10 days` to `365 days`, or
 - change `Delete after` from `Never` to `100 days`, or
 - select a different test destination label.
 
@@ -1029,7 +1032,7 @@ The installation is complete when all of the following are true:
 - Mail Filter appears in Gmail.
 - Authorization has been granted for the correct Gmail account.
 - Daily processing is enabled.
-- Daily processing is configured for the 2 AM hour in the project timezone (`America/Chicago` in the supplied manifest).
+- Scheduled processing runs during the 2–5 AM window in the project timezone (`America/Chicago` in the supplied manifest).
 - `RULES` opens successfully.
 - From-based rule creation works.
 - Words-based rule creation works.
@@ -1038,7 +1041,7 @@ The installation is complete when all of the following are true:
 - A delete test sends the message to Trash.
 - Existing Rules page shows, edits, and deletes rules, with Has Attachment and Remove Previous Labels settings.
 - A renamed destination label is shown under its current name; missing labels are identified.
-- The sidebar's Next, Backfill, and Tracked counters, and the web page's last-10-days Execution History, are displayed with the meanings described above.
+- The sidebar's Next, Backfill, Moved, Deleted, and Failed indicators, and the web page's last-10-days Execution History, are displayed with the meanings described above.
 
 ---
 

@@ -26,7 +26,7 @@ Create rule
    +--> create hidden MOVED label
    +--> create Gmail matching filter
    +--> save rule in User Properties
-   +--> ensure daily trigger exists
+   +--> ensure hourly trigger exists
    +--> optionally mark existing-mail backfill pending
 
 Incoming matching email
@@ -36,10 +36,10 @@ Incoming matching email
 Manual/daily processor
    |
    +--> perform pending existing-mail backfill
-   +--> find tracked messages
-   +--> calculate age from Gmail internalDate
-   +--> delete if delete is due
-   +--> otherwise move if move is due
+   +--> search due tracked messages for movement across all rules
+   +--> validate Gmail internalDate and labels; move when due
+   +--> search due tracked messages for deletion across all rules
+   +--> validate Gmail internalDate and labels; trash when due
 ```
 
 ---
@@ -57,10 +57,11 @@ Important entries:
 - `EXECUTION_HISTORY_DAYS` (10)
 - `EXECUTION_LOG_KEY` (`MR_EXECUTION_LOG`)
 - `AUTOMATION_HEALTH_KEY` (`MR_AUTOMATION_HEALTH`)
+- `PROCESS_CURSOR_KEY` (`MR_PROCESS_CURSOR`, used to clear legacy cursor-offset properties)
 - `EXECUTION_STALE_MS` (15 minutes)
 - `WORKER_RUNTIME_BUDGET_MS` (5 minutes)
 - `MANUAL_RUNTIME_BUDGET_MS` (20 seconds)
-- `MESSAGE_THROTTLE_MS` (500 ms)
+- `MESSAGE_THROTTLE_MS` (0.1 milliseconds as configured in version 3.0)
 - `QUOTA_RETRY_WAIT_MS` (15 seconds)
 - `DAY_MS`
 
@@ -272,7 +273,8 @@ Main functions:
 - `processDelayedMailRules()`
 - `runProcessingWorker_(runType, runtimeBudgetMs)`
 - `processSingleRule_()`
-- `listTrackedMessageIds_()`
+- `listDueTrackedMessageIds_()`
+- `clearLegacyProcessingCursor_()`
 - `processTrackedMessage_()`
 
 ### `runProcessingWorker_()`
@@ -283,9 +285,10 @@ Responsibilities:
 - log a `Running` execution record with `Manual` or `Daily` type;
 - process pending backfills;
 - reload rules;
-- process tracked messages within the worker deadline;
-- collect errors and determine `Success`, `Failure`, or `Partial`;
-- save an automation-health snapshot including `trackedAtRunCount`;
+- process due moves across all rules, then due deletions across all rules, within the worker deadline;
+- collect errors and determine `Success`, `Failure`, or `Partial` using successful actions and early-stop state;
+- save an automation-health snapshot including per-run counts and date-keyed cumulative nighttime totals;
+- show the latest manual counts or scheduled-nightly totals in the same three visible counters.
 - release lock.
 
 ### `processTrackedMessage_()`
@@ -294,21 +297,20 @@ This is the main delayed-action decision function.
 
 Current order is important:
 
-1. read message and original `internalDate`;
-2. calculate age;
-3. determine move/delete delays;
-4. **check delete first**;
-5. then evaluate movement.
+1. the worker searches messages old enough for the selected `move` or `delete` phase;
+2. the message is read and age is recalculated from `internalDate`;
+3. any message already due for deletion is skipped in the move phase;
+4. the deletion phase trashes messages when their delete delay is due; otherwise, the move phase performs eligible movement.
 
-Do not move the delete check below the move check unless the product behavior is intentionally being changed.
+The worker processes all rules in the move phase before starting deletions. If the move phase stopped early or collected an error, the deletion phase is skipped for that execution. Preserve delete-over-move precedence for individual messages.
 
 ### Safeguards and recorded status
 
-`CFG.WORKER_RUNTIME_BUDGET_MS` is the normal 5-minute budget. `RUN NOW` passes `CFG.MANUAL_RUNTIME_BUDGET_MS` (20 seconds). The worker checks its deadline between rules and messages (a currently-running backfill call is not interrupted mid-call). `processSingleRule_()` throttles visits by 500 ms and retries recognized quota/rate-limit errors once after a 15-second wait when sufficient time remains.
+`CFG.WORKER_RUNTIME_BUDGET_MS` is the normal 5-minute budget. `RUN NOW` passes `CFG.MANUAL_RUNTIME_BUDGET_MS` (20 seconds). The worker checks its deadline between rules and messages (a currently-running backfill call is not interrupted mid-call). `processSingleRule_()` uses the configured `0.1` ms message throttle and retries recognized quota/rate-limit errors once after a 15-second wait when sufficient time remains.
 
-The tracked count is a **sum of message entries visited/attempted across rules**, including entries not yet due for an action. It is not the count of messages moved/deleted. **Backfill** is the count of rules whose `backfillPending` flag remains true.
+The internal tracked count sums attempted entries during the move pass across rules; the processor searches only for due candidates rather than all tracked entries. The internal examined/eligible/skipped counters are also retained. **Backfill** counts rules whose `backfillPending` flag remains true, not messages.
 
-A run with collected errors is `Failure`. A manual run that stops early without collected errors is `Partial`. A daily run that stops early without collected errors can still be `Success`; therefore `Success` is not a proof that all queued messages were processed. A `Running` entry older than 15 minutes is converted to `Interrupted` when history is read. These statuses are records/diagnostics, not transactional guarantees.
+`Success` means no collected error and no early stop. `Partial` means a worker stopped early or collected errors after at least one successful move, delete, or backfill. `Failure` means errors without a successful action or early stop, or an uncaught worker exception. A `Running` entry older than 15 minutes is converted to `Interrupted` when history is read. These statuses do not independently verify that every overdue Gmail message was processed. Execution-history notes include runtime-budget messages and up to three example errors.
 
 Functions: `startExecutionRecord_()`, `completeExecutionRecord_()`, `getExecutionHistory_()`, `saveExecutionHistory_()`, `getAutomationStatus_()`, `getAutomationHealthSnapshot_()`, `saveAutomationHealthSnapshot_()`, `getExecutionHistoryForWeb()` and `getNextExpectedDailyRunText_()`. History is retained for 10 days in User Properties under `MR_EXECUTION_LOG`; the latest health snapshot is stored under `MR_AUTOMATION_HEALTH`.
 
@@ -371,13 +373,13 @@ It directly calls:
 runProcessingWorker_('Manual', CFG.MANUAL_RUNTIME_BUDGET_MS);
 ```
 
-The manual budget is 20 seconds. If the worker reaches its limit before all work is visited and no other error is collected, it records `Partial` and explains that remaining messages will be handled during the next scheduled run. If errors occur, it records `Failure` and directs the user to Recent Executions / Existing Rules.
+The manual budget is 20 seconds. If the worker stops early, it records `Partial`. With collected errors, it records `Partial` if any move, delete, or backfill succeeded (or it stopped early); otherwise it records `Failure`. The existing manual notification may attribute a `Partial` result to a time limit even when errors caused that status; consult execution history for the recorded reason.
 
 The current implementation does **not** create a temporary one-time trigger. Do not reintroduce one-time scheduling functions such as `scheduleWorkerSoon_()` / `runDelayedMailWorker()` without intentionally redesigning this behavior.
 
 ---
 
-## 14. Daily trigger
+## 14. Nighttime processing trigger
 
 Functions:
 
@@ -393,9 +395,10 @@ Current schedule:
 
 ```javascript
 .timeBased()
-.everyDays(1)
-.atHour(2)
+.everyHours(1)
 ```
+
+The `processDelayedMailRules()` handler exits outside local hours 2, 3, and 4, giving three possible nighttime executions (2–5 AM).
 
 The current project manifest uses the timezone:
 
@@ -403,11 +406,11 @@ The current project manifest uses the timezone:
 America/Chicago
 ```
 
-Therefore, the processor is currently scheduled for the **2 AM hour in the project timezone**. Apps Script may execute it at some point within the 2 AM–3 AM local-time window rather than exactly at 2:00 AM.
+Therefore, the processor is eligible to run once in each hourly window **2–3 AM, 3–4 AM, and 4–5 AM** in the project timezone. Apps Script chooses the minute of hourly trigger execution; the add-on displays the estimated full **2–5 AM** window.
 
 If the project timezone is changed in `appsscript.json`, the trigger's local execution hour follows that project timezone.
 
-If the daily time is changed, edit only `ensureDailyTrigger_()` and test trigger creation.
+If the scheduled windows are changed, review both `ensureDailyTrigger_()` and the hour gate in `processDelayedMailRules()`; test trigger creation and hour gating.
 
 ### Important
 
@@ -484,7 +487,7 @@ Preserve this sequence unless there is a tested reason to alter it.
 
 The current `Code.gs` uses `buildRuleManagerCard_()` for the live Create Rule card; `refreshCreateMatchCount()` updates the matching-email counter. The main action buttons are **SAVE**, **RUN NOW**, and **RULES**. A separate web page (`Rules.html`) handles edit/delete. The old inline Existing Rules card and legacy `editRule()`, `updateRuleFromCard()`, and `deleteRuleFromCard()` functions described in earlier versions are **not present in this final code**; do not try to edit them.
 
-Keep form field names in sync across `readRuleForm_()`, the web editor data, and `Rules.html`. The sidebar also shows `Next`, `Backfill`, `Tracked`, at most three recent executions, and a developer/LinkedIn credit. As with any seemingly unused code, check references before removing functions in a future version.
+Keep form field names in sync across `readRuleForm_()`, the web editor data, and `Rules.html`. The sidebar shows `Next`, `Backfill`, and visible `Moved` / `Deleted` / `Failed` counters, at most three recent executions, and developer/LinkedIn/GitHub links. For a latest manual execution the displayed counters are that run’s values; for a latest scheduled execution they are cumulative nighttime totals for the saved local-date key. Tracked/Examined/Eligible/Skipped remain internal. As with any seemingly unused code, check references before removing functions in a future version.
 
 ---
 
@@ -591,7 +594,7 @@ Before considering a modified version complete, verify:
 - Apply-to-existing works.
 - Move removes `INBOX` and adds destination label; optional previous-label removal excludes destination/internal/system labels.
 - Delete sends the message to Trash.
-- Daily trigger exists only once.
+- One hourly processing trigger exists; handler runs only during local 2–5 AM windows.
 - `RULES` opens the correct project's web page, with updated label names and execution history.
 - No temporary worker triggers accumulate.
 - `WEB_APP_URL` still points to the active `/exec` deployment.

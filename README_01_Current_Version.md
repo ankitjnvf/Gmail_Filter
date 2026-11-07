@@ -26,8 +26,8 @@ The current supported delays are:
 - 1 day
 - 5 days
 - 10 days
-- 50 days
 - 100 days
+- 365 days
 - Never
 
 The timing is based on the message's **original Gmail received date**, not on the date the rule was created. One day means 24 elapsed hours; an eligible message is processed when the daily/manual worker next runs, not at the precise instant its age crosses the threshold.
@@ -49,7 +49,7 @@ This is the main Apps Script file. It contains:
 - rule storage
 - existing-mail enrollment
 - delayed processing
-- daily trigger management
+- hourly trigger management with nighttime processing
 - manual `RUN NOW`
 - processing safeguards, execution history, and automation health status
 - message-match counting and attachment criteria
@@ -92,7 +92,7 @@ The current package uses:
 - `script.scriptapp` scope for trigger management
 - Gmail homepage/contextual add-on configuration
 - web-app configuration (`executeAs: USER_ACCESSING`, `access: MYSELF`)
-- allowed Apps Script web-app URL prefixes for Apps Script and the developer's LinkedIn link
+- allowed Apps Script web-app URL prefixes for Apps Script and the developer's LinkedIn link (the 3.0 manifest supplied here does not include a GitHub prefix, although `Code.gs` renders a GitHub link)
 
 ---
 
@@ -115,12 +115,12 @@ The Gmail sidebar displays a rule-creation form with:
 
 Below these controls are:
 
-- `Next` — an estimate of the next 2–3 AM scheduled window, or `Not scheduled` when the daily trigger is not enabled;
+- `Next` — the next 2–5 AM scheduled nighttime window, or `Not scheduled` when the processing trigger is not enabled;
 - `Backfill` — the **number of rules** awaiting existing-mail enrollment (`backfillPending = true`), not the number of emails;
-- `Tracked` — the number of tracked message entries **visited during the latest recorded worker run**, summed across rules. It is not a live mailbox count, not necessarily a unique-message count, and not the number moved/deleted;
+- `Moved`, `Deleted`, and `Failed` — if the latest execution is `Manual` (`RUN NOW`), show that run’s counts; if the latest execution is `Daily`, show combined counts from scheduled nighttime executions on that local calendar day (or the latest recorded scheduled night until the next night runs). Manual results do not add to the stored nighttime totals. The display can show `—` until a relevant result is recorded;
 - `ENABLE DAILY PROCESSING` — shown only if a daily trigger is not already present;
 - **Recent Executions** — at most the three newest log records (timestamp and status);
-- the developer credit and LinkedIn link.
+- the developer credit, LinkedIn link, and GitHub repository link.
 
 `Matching existing emails` reports matches found by the current Gmail search; it does not mean those messages have already been enrolled or processed. The count can be zero until From or Has the words has been provided.
 
@@ -133,7 +133,7 @@ The rule-management interface is the separate web page opened by `RULES`; the ol
 Before a rule is saved, the code checks the following:
 
 1. At least one of `From` or `Has the words` must be provided; `Has Attachment` is an optional additional condition, not a standalone criterion.
-2. `Move after` must be one of the supported delay values: 1, 5, 10, 50, 100 days or Never.
+2. `Move after` must be one of the supported delay values: 1, 5, 10, 100, 365 days or Never.
 3. `Delete after` must be one of those same supported values.
 4. If `Move after` is not `Never`, an existing destination Gmail user label must be selected.
 5. `Move after` and `Delete after` cannot both be `Never`.
@@ -215,7 +215,7 @@ Any rule with `backfillPending = true` first enrolls matching existing mail.
 
 ### Stage B — Process tracked messages
 
-For each rule, the processor finds messages carrying that rule's hidden tracking label.
+The worker first processes due moves across all rules, then due deletions across all rules. Messages already due for deletion bypass the move action. The deletion phase is skipped if the move phase stopped early or collected an execution error. For each phase and rule, the processor searches for tracked messages old enough for that action, then validates message age and labels before changing the message.
 
 For each message it reads:
 
@@ -231,11 +231,11 @@ The message age is calculated from the original Gmail received date.
 
 When the worker acquires the user lock, it starts an execution-history record with its type (`Manual` or `Daily`), start/end times, status, and error/notes. Records are retained for 10 days. Runs that remain recorded as `Running` for at least 15 minutes are shown as `Interrupted` on a later history read. If another worker already holds the user lock, the new attempt is skipped and no execution-history record is created for that attempt.
 
-The normal worker budget is **5 minutes**; `RUN NOW` uses a shorter **20-second** budget. Tracked messages are throttled by **500 ms** between visits. A recognized quota/rate-limit error can cause one retry after a **15-second** wait, if enough time remains.
+The scheduled worker budget is **5 minutes per eligible nighttime run**; `RUN NOW` uses a shorter **20-second** budget. The configured per-message throttle is `MESSAGE_THROTTLE_MS = 0.1` (milliseconds) between visits. A recognized quota/rate-limit error can cause one retry after a **15-second** wait, if enough time remains.
 
-**Status interpretation:** `Success` means no error was collected on that run. It does **not** guarantee that all pending work was finished: a daily run that stops early because of its time budget can still be recorded as `Success`. `Failure` means one or more errors occurred. `Partial` is used for a manual run that stops early without collected errors. `Interrupted` is inferred from a stale `Running` record and is not an instantaneous crash detector. A run in progress can show `Running`.
+**Status interpretation:** `Success` means no processing error was collected and the worker did not stop early. `Partial` means the worker stopped early, or errors were collected after at least one successful move, delete, or backfill. `Failure` means errors were collected without any such successful action and without an early stop; an uncaught worker exception is also recorded as `Failure`. `Interrupted` is inferred from a stale `Running` record and is not an instantaneous crash detector. A run in progress can show `Running`. These statuses do not independently recheck every overdue message in Gmail.
 
-The **Tracked** snapshot counts visits/attempts to tracked message entries in the last worker execution, including entries awaiting their due time and some failed attempts. It is not a measure of successful moves/deletions.
+The internal **Tracked**, **Examined**, **Eligible**, and **Skipped** snapshots are retained but not displayed on the add-on. `Tracked` counts attempts in the move pass; due-message searches reduce visits to mail that is not yet due. The visible `Failed` count is the number of failed per-message attempts; execution-history errors can also include rule-level and backfill failures.
 
 ---
 
@@ -284,7 +284,7 @@ If both move and delete are already due at the time processing runs, **delete ta
 Example:
 
 - Move after = 10 days
-- Delete after = 50 days
+- Delete after = 100 days
 - Message age = 65 days when processed
 
 Result: the message is sent directly to Trash rather than first performing the move operation.
@@ -295,9 +295,9 @@ Result: the message is sent directly to Trash rather than first performing the m
 
 `RUN NOW` calls `runProcessingWorker_('Manual', CFG.MANUAL_RUNTIME_BUDGET_MS)` directly with the **20-second** manual budget.
 
-The implementation does **not** create a temporary one-time trigger for manual processing. This is intentional: only the permanent daily trigger is required.
+The implementation does **not** create a temporary one-time trigger for manual processing. This is intentional: only the permanent hourly trigger is required.
 
-If that limit is reached while work remains, the run can report `Partial`, and the sidebar says that remaining messages will be handled by the next scheduled run. If errors were collected, the run reports `Failure` and refers the user to Recent Executions or Existing Rules. Manual execution does not override the configured message-age thresholds.
+If the worker stops early, it reports `Partial`. If errors were collected, status is `Partial` when any move, delete, or backfill succeeded (or the run stopped early), and otherwise `Failure`. The existing Run Now notification is not a complete explanation of every possible `Partial` cause; review execution history for recorded details. Manual execution does not override the configured message-age thresholds.
 
 ---
 
@@ -311,13 +311,11 @@ The trigger is created only if one does not already exist.
 
 Current trigger configuration:
 
-- once per day;
-- configured with `.atHour(2)`;
+- one recurring trigger created with `.everyHours(1)`;
+- the `processDelayedMailRules()` handler allows processing only when the local hour is 2, 3, or 4 (the 2–5 AM nighttime window);
 - project timezone: `America/Chicago`.
 
-This means the daily processor is scheduled for the **2 AM hour in the project's current timezone**. With the current manifest, that timezone is `America/Chicago`.
-
-Apps Script time-based triggers are not guaranteed to run at exactly 2:00 AM. Google may execute the trigger at some point within the 2 AM–3 AM local-time window. The `Next` indicator is an estimated window, not a promise or confirmation of execution. Daily runs use the normal five-minute worker budget.
+Apps Script chooses the execution minute of an hourly trigger; a run is not guaranteed at exactly 2:00, 3:00, or 4:00 AM. Each qualifying nighttime execution uses the normal five-minute worker budget. The `Next` indicator is an estimated nightly window, not confirmation of execution. Existing daily triggers must be removed and recreated through `enableDailyProcessing()` to adopt the hourly schedule; editing code alone does not change an installed trigger.
 
 ---
 
@@ -431,7 +429,7 @@ If that Gmail label is later deleted:
 Example:
 
 - Move after = 10 days
-- Delete after = 50 days
+- Delete after = 100 days
 
 After the move, the message is still tracked internally because it must later be deleted.
 
@@ -487,7 +485,7 @@ Gmail matching filter
 Hidden ZZ_TRACK_... label
       |
       v
-Daily processor / RUN NOW
+Nighttime processor / RUN NOW
       |
       +--> Move/archive when due
       |
@@ -516,7 +514,7 @@ Gmail sidebar
 
 Do not change these unintentionally:
 
-- one daily processor trigger, not one trigger per rule;
+- one hourly processor trigger with processing limited to the 2–5 AM local window, not one trigger per rule;
 - no temporary trigger for `RUN NOW`;
 - incoming mail is enrolled using Gmail filters;
 - hidden Gmail labels are used for tracking;
@@ -529,7 +527,8 @@ Do not change these unintentionally:
 - the system does not require `script.deployments.readonly`;
 - the system does not require `script.external_request` for deployment discovery;
 - internal rule-property/label prefixes are `MR_RULE_` and `ZZ_`, respectively;
-- recorded status and activity indicators have the limitations described above.
+- recorded status and activity indicators have the limitations described above;
+- manual-run counters and cumulative nighttime counters share one display, but are stored separately.
 
 ---
 
@@ -551,7 +550,7 @@ Do not change these unintentionally:
 
 - A message does not move merely because `RUN NOW` is pressed. It must also be old enough for the configured delay.
 - With a 10-day rule, a message received today will not move today.
-- `Apply to existing emails` is useful for testing because old messages can already satisfy the 1-, 5-, 10-, 50-, or 100-day age condition.
+- `Apply to existing emails` is useful for testing because old messages can already satisfy the 1-, 5-, 10-, 100-, or 365-day age condition.
 - A Gmail destination label must exist before it can be selected in Mail Filter.
 - The web page URL is project-specific. Each Gmail account/project requires its own `WEB_APP_URL`.
 - For a **fresh installation**, start with a new Apps Script project and its own `WEB_APP_URL`; this guide is not a migration procedure for older installations using different internal prefixes.

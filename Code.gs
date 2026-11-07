@@ -2,14 +2,15 @@ const CFG = Object.freeze({
   RULE_PREFIX: 'MR_RULE_',
   INTERNAL_LABEL_PREFIX: 'ZZ_',
   TRIGGER_FUNCTION: 'processDelayedMailRules',
-  VALID_DELAYS: ['1', '5', '10', '50', '100', 'never'],
+  VALID_DELAYS: ['1', '5', '10', '100', '365', 'never'],
   EXECUTION_HISTORY_DAYS: 10,
   EXECUTION_LOG_KEY: 'MR_EXECUTION_LOG',
   AUTOMATION_HEALTH_KEY: 'MR_AUTOMATION_HEALTH',
+  PROCESS_CURSOR_KEY: 'MR_PROCESS_CURSOR',
   EXECUTION_STALE_MS: 15 * 60 * 1000,
   WORKER_RUNTIME_BUDGET_MS: 5 * 60 * 1000,
   MANUAL_RUNTIME_BUDGET_MS: 20 * 1000,
-  MESSAGE_THROTTLE_MS: 500,
+  MESSAGE_THROTTLE_MS: 0.1,
   QUOTA_RETRY_WAIT_MS: 15000,
   DAY_MS: 24 * 60 * 60 * 1000
 
@@ -18,8 +19,8 @@ const DELAY_OPTIONS = Object.freeze([
   { label: '1 day', value: '1' },
   { label: '5 days', value: '5' },
   { label: '10 days', value: '10' },
-  { label: '50 days', value: '50' },
   { label: '100 days', value: '100' },
+  { label: '365 days', value: '365' },
   { label: 'Never', value: 'never' }
 ]);
 
@@ -228,26 +229,45 @@ function buildRuleManagerCard_(prefillSender, formState) {
       /*.setHeader('Automation Status');*/
   const automationStatus =
     getAutomationStatus_();
-  automationSection.addWidget(
-    CardService.newDecoratedText()
-      .setText(
-        '<b>Next:</b> ' +
-        escapeHtml_(
-          automationStatus.nextExpectedText
-        ) +
-        '<br><b>Backfill:</b> ' +
-        escapeHtml_(
-          String(
-            automationStatus.backfillPendingCount
-          )
-        ) +
-        ' • <b>Tracked:</b> ' +
+
+
+automationSection.addWidget(
+  CardService.newDecoratedText()
+    .setText(
+      '<b>Next:</b> ' +
+      escapeHtml_(
+        automationStatus.nextExpectedText
+      ) +
+      ' • <b>Backfill:</b> ' +
+      escapeHtml_(
+        String(automationStatus.backfillPendingCount)
+      ) +
+      ' <br><b>Moved:</b> ' +
+      escapeHtml_(
+        automationStatus.movedAtLastRunCompactText
+      ) +
+      ' • <b>Deleted:</b> ' +
+      escapeHtml_(
+        automationStatus.deletedAtLastRunCompactText
+      ) +
+      /* ' • <b>Tracked:</b> ' +
         escapeHtml_(
           automationStatus.trackedAtLastRunCompactText
-        )
+        ) +*/
+       /* '<br><b>Examined:</b> ' +
+        escapeHtml_(automationStatus.examinedAtLastRunCompactText) +
+        ' • <b>Eligible:</b> ' +*/
+       /* escapeHtml_(automationStatus.eligibleAtLastRunCompactText) +
+        ' • <b>Skipped:</b> ' +
+        escapeHtml_(automationStatus.skippedAtLastRunCompactText) +*/
+      ' • <b>Failed:</b> ' +
+      escapeHtml_(
+        automationStatus.failedAtLastRunCompactText
       )
-      .setWrapText(true)
-  );
+    )
+    .setWrapText(true)
+);
+
   const enabled =
     automationStatus.enabled;
   if (!enabled) {
@@ -314,7 +334,8 @@ if (
     CardService.newTextParagraph()
       .setText(
         'Developed by Ankit Yadav • ' +
-        '<a href="https://www.linkedin.com/in/ankit-jnvf/">LinkedIn</a>'
+        '<a href="https://www.linkedin.com/in/ankit-jnvf/">LinkedIn</a>' +
+        ' • <a href="https://github.com/ankitjnvf/Gmail_Filter">GitHub</a>'
       )
   );
   card.addSection(
@@ -791,6 +812,10 @@ function hasRuleMatchedWithinLastYear_(rule) {
    \\\\========================================================= */
 
 function processDelayedMailRules() {
+  const currentHour = Number(
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'H')
+  );
+  if (currentHour < 2 || currentHour > 4) return;
   runProcessingWorker_('Daily');
 }
 
@@ -814,6 +839,7 @@ function runProcessingWorker_(runType, runtimeBudgetMs) {
     let rules = getRules_();
     const executionErrors = [];
     let workerStoppedEarly = false;
+    let successfulBackfillCount = 0;
     for (const rule of rules) {
   if (Date.now() >= workerDeadlineMs) {
     workerStoppedEarly = true;
@@ -831,6 +857,7 @@ function runProcessingWorker_(runType, runtimeBudgetMs) {
       new Date().toISOString();
       rule.lastBackfillCount = count;
       saveRule_(rule);
+      successfulBackfillCount++;
   } catch (err) {
     const message =
       'Backfill for rule ' +
@@ -844,81 +871,121 @@ function runProcessingWorker_(runType, runtimeBudgetMs) {
     rules = getRules_();
     const nowMs = Date.now();
     let trackedAtRunCount = 0;
-    for (const rule of rules) {
-      if (Date.now() >= workerDeadlineMs) {
-        workerStoppedEarly = true;
-        console.log(
-        'Worker stopped cleanly before runtime limit during rule processing.'
-        );
+    let movedAtRunCount = 0;
+    let deletedAtRunCount = 0;
+    let examinedAtRunCount = 0;
+    let eligibleAtRunCount = 0;
+    let skippedAtRunCount = 0;
+    let failedAtRunCount = 0;
+    // Finish overdue moves across every rule before starting deletions.
+    // A message whose deletion is already due is handled directly in the
+    // deletion pass, preserving the existing delete-over-move precedence.
+    for (const phase of ['move', 'delete']) {
+      if (phase === 'delete' && (workerStoppedEarly || executionErrors.length > 0)) {
         break;
       }
-      try {
-        const ruleResult =
-  processSingleRule_(
-    rule,
-    nowMs,
-    workerDeadlineMs
-  );
-trackedAtRunCount +=
-  ruleResult.trackedCount;
-ruleResult.errors.forEach(
-  error => executionErrors.push(error)
-);
-if (ruleResult.stoppedEarly) {
-  workerStoppedEarly = true;
-  console.log(
-    'Worker stopped cleanly during rule ' +
-    rule.id +
-    ' before runtime limit.'
-  );
-  break;
-}
+      for (const rule of rules) {
+        if (Date.now() >= workerDeadlineMs) {
+          workerStoppedEarly = true;
+          console.log(
+            'Worker stopped cleanly before runtime limit during rule processing.'
+          );
+          break;
+        }
+        try {
+          const ruleResult = processSingleRule_(
+            rule,
+            nowMs,
+            workerDeadlineMs,
+            phase
+          );
+          // Each message is counted as Tracked only on its first pass.
+          if (phase === 'move') trackedAtRunCount += ruleResult.trackedCount;
+          movedAtRunCount += ruleResult.movedCount;
+          deletedAtRunCount += ruleResult.deletedCount;
+          examinedAtRunCount += ruleResult.examinedCount;
+          eligibleAtRunCount += ruleResult.eligibleCount;
+          skippedAtRunCount += ruleResult.skippedCount;
+          failedAtRunCount += ruleResult.failedCount;
+          ruleResult.errors.forEach(error => executionErrors.push(error));
+          if (ruleResult.stoppedEarly) {
+            workerStoppedEarly = true;
+            console.log(
+              'Worker stopped cleanly during rule ' +
+              rule.id +
+              ' before runtime limit.'
+            );
+            break;
+          }
+        } catch (err) {
+          const message = 'Rule ' + rule.id + ' failed: ' + err.message;
+          console.error(message);
+          executionErrors.push(message);
+        }
       }
-      catch (err) {
-        const message =      'Rule ' +    rule.id +  ' failed: ' + err.message;
-        console.error(message);
-        executionErrors.push(message);
-      }
+      if (workerStoppedEarly) break;
     }
-    let finalStatus =
-      executionErrors.length > 0 ? 'Failure' : 'Success';
-    let executionNote = '';
-
-    if (
-      (runType || 'Unknown') === 'Manual' &&
-      workerStoppedEarly &&
-      executionErrors.length === 0
-    ) {
-      finalStatus = 'Partial';
-      executionNote =
-        'Manual run time limit reached. Remaining messages deferred to the next scheduled run.';
+    // A run is successful only if it finishes without errors or time-limit
+    // interruption. Successful actions plus errors mean partial completion.
+    const successfulActions =
+      movedAtRunCount + deletedAtRunCount + successfulBackfillCount;
+    const finalStatus = executionErrors.length > 0
+      ? (successfulActions > 0 || workerStoppedEarly ? 'Partial' : 'Failure')
+      : (workerStoppedEarly ? 'Partial' : 'Success');
+    const executionNotes = [];
+    if (workerStoppedEarly) {
+      executionNotes.push('Runtime budget reached; due work may remain.');
     }
-
     if (executionErrors.length > 0) {
-      completeExecutionRecord_(
-        executionId,
-        'Failure',
+      executionNotes.push(
+        executionErrors.length + ' error(s): ' +
         executionErrors.slice(0, 3).join(' | ')
       );
-    } else {
-      completeExecutionRecord_(
-        executionId,
-        finalStatus,
-        executionNote
-      );
     }
+    const executionNote = executionNotes.join(' | ');
+    completeExecutionRecord_(executionId, finalStatus, executionNote);
 
-    saveAutomationHealthSnapshot_({
-      lastRunAt: new Date().toISOString(),
+    const previousSnapshot = getAutomationHealthSnapshot_() || {};
+    const completedAt = new Date();
+    const nextSnapshot = Object.assign({}, previousSnapshot, {
+      lastRunAt: completedAt.toISOString(),
       lastRunType: runType || 'Unknown',
       lastRunStatus: finalStatus,
-      trackedAtRunCount: trackedAtRunCount
+      trackedAtRunCount: trackedAtRunCount,
+      movedAtRunCount: movedAtRunCount,
+      deletedAtRunCount: deletedAtRunCount,
+      examinedAtRunCount: examinedAtRunCount,
+      eligibleAtRunCount: eligibleAtRunCount,
+      skippedAtRunCount: skippedAtRunCount,
+      failedAtRunCount: failedAtRunCount
     });
+    // Only scheduled nighttime runs contribute to the displayed nightly totals.
+    // Reset at the first recorded run of a new local calendar day.
+    if ((runType || 'Unknown') === 'Daily') {
+      const nightKey = Utilities.formatDate(
+        completedAt, Session.getScriptTimeZone(), 'yyyy-MM-dd'
+      );
+      const prior = previousSnapshot.nightlyTotals;
+      const sameNight = prior && prior.dateKey === nightKey;
+      nextSnapshot.nightlyTotals = {
+        dateKey: nightKey,
+        moved: (sameNight ? Number(prior.moved) || 0 : 0) + movedAtRunCount,
+        deleted: (sameNight ? Number(prior.deleted) || 0 : 0) + deletedAtRunCount,
+        failed: (sameNight ? Number(prior.failed) || 0 : 0) + failedAtRunCount
+      };
+    }
+    saveAutomationHealthSnapshot_(nextSnapshot);
 
     return {
       status: finalStatus,
       stoppedEarly: workerStoppedEarly,
       trackedCount: trackedAtRunCount,
+      movedCount: movedAtRunCount,
+      deletedCount: deletedAtRunCount,
+      examinedCount: examinedAtRunCount,
+      eligibleCount: eligibleAtRunCount,
+      skippedCount: skippedAtRunCount,
+      failedCount: failedAtRunCount,
       error:
         executionErrors.length > 0
           ? executionErrors.slice(0, 3).join(' | ')
@@ -938,142 +1005,152 @@ if (ruleResult.stoppedEarly) {
   }
 }
 
-function processSingleRule_(rule, nowMs, workerDeadlineMs) {
-  const messageIds = listTrackedMessageIds_(rule.trackingLabelId);
-  const errors = [];
-  let processedCount = 0;
-  let stoppedEarly = false;
-  const ordinaryUserLabelIds =
-    rule.removePreviousLabels
-      ? getOrdinaryUserLabelIds_()
-      : [];
-  for (const messageId of messageIds) {
-    if (
-      workerDeadlineMs &&
-      Date.now() >= workerDeadlineMs
-    ) {
-      stoppedEarly = true;
-      break;
-    }
-    try {
-  processTrackedMessage_(
-    messageId,
-    rule,
-    nowMs,
-    ordinaryUserLabelIds
-  );
-
-} catch (err) {
-
-  const errorText =
-    err && err.message
-      ? err.message
-      : String(err);
-
-  const isQuotaError =
-    /quota exceeded|rate limit|user-rate limit/i.test(
-      errorText
-    );
-
-  if (isQuotaError) {
-
-    if (
-      workerDeadlineMs &&
-      Date.now() +
-        CFG.QUOTA_RETRY_WAIT_MS >=
-        workerDeadlineMs
-    ) {
-      stoppedEarly = true;
-      break;
-    }
-
-    Utilities.sleep(
-      CFG.QUOTA_RETRY_WAIT_MS
-    );
-
-    try {
-
-      processTrackedMessage_(
-        messageId,
-        rule,
-        nowMs,
-        ordinaryUserLabelIds
-      );
-
-    } catch (retryErr) {
-
-      const message =
-        'Rule ' +
-        rule.id +
-        ', message ' +
-        messageId +
-        ' failed: ' +
-        (
-          retryErr &&
-          retryErr.message
-            ? retryErr.message
-            : String(retryErr)
-        );
-
-      console.error(message);
-      errors.push(message);
-
-    }
-
-  } else {
-
-    const message =
-      'Rule ' +
-      rule.id +
-      ', message ' +
-      messageId +
-      ' failed: ' +
-      errorText;
-
-    console.error(message);
-    errors.push(message);
-
-  }
-
-}
-
-processedCount++;
-
-if (
-  CFG.MESSAGE_THROTTLE_MS > 0
-) {
-  Utilities.sleep(
-    CFG.MESSAGE_THROTTLE_MS
+// Clear offsets left by earlier versions. Result-list offsets are unsafe:
+// the Gmail candidate list changes whenever messages are moved or deleted.
+// Progress is instead represented by the email labels themselves.
+function clearLegacyProcessingCursor_(rule, phase) {
+  PropertiesService.getUserProperties().deleteProperty(
+    CFG.PROCESS_CURSOR_KEY + '_' + phase + '_' + rule.id
   );
 }
-  }
-  return {
-    errors: errors,
-    trackedCount: processedCount,
-    stoppedEarly: stoppedEarly
-  };
-}
 
-function listTrackedMessageIds_(trackingLabelId) {
+// Select only messages old enough for the requested action. The message's
+// internalDate and labels are still validated before any modification.
+function listDueTrackedMessageIds_(rule, phase, nowMs) {
+  const days = delayToNumber_(
+    phase === 'move' ? rule.moveAfter : rule.deleteAfter
+  );
+  if (days === null) return [];
+
+  // Add one second to avoid missing a message at a rounded timestamp edge.
+  const cutoffSeconds = Math.ceil((nowMs - days * CFG.DAY_MS) / 1000) + 1;
+  const queryParts = ['before:' + cutoffSeconds];
+
+  if (phase === 'move') {
+    // A message already due for deletion goes to the delete phase directly.
+    const deleteDays = delayToNumber_(rule.deleteAfter);
+    if (deleteDays !== null) {
+      const deleteCutoffSeconds = Math.floor(
+        (nowMs - deleteDays * CFG.DAY_MS) / 1000
+      ) - 1;
+      queryParts.push('after:' + deleteCutoffSeconds);
+    }
+
+    // Exclude previously moved emails without reading them again.
+    // Resolve the actual Gmail label name rather than assuming an ID format.
+    const movedLabel = Gmail.Users.Labels.get('me', rule.movedLabelId);
+    if (movedLabel && movedLabel.name) {
+      queryParts.push('-label:"' + movedLabel.name.replace(/"/g, '\\"') + '"');
+    }
+  }
+
   const ids = [];
   let pageToken = null;
   do {
     const options = {
-      labelIds: [trackingLabelId],
+      labelIds: [rule.trackingLabelId],
+      q: queryParts.join(' '),
       maxResults: 500,
       includeSpamTrash: false
     };
     if (pageToken) options.pageToken = pageToken;
     const response = Gmail.Users.Messages.list('me', options);
-    (response.messages || []).forEach(
-      message => ids.push(message.id)
-    );
+    (response.messages || []).forEach(message => ids.push(message.id));
     pageToken = response.nextPageToken || null;
   } while (pageToken);
   return ids;
 }
 
-function processTrackedMessage_(messageId, rule, nowMs, ordinaryUserLabelIds) {
+function processSingleRule_(rule, nowMs, workerDeadlineMs, phase) {
+  const messageIds = listDueTrackedMessageIds_(rule, phase, nowMs);
+  const errors = [];
+  let processedCount = 0;
+  let examinedCount = 0;
+  let eligibleCount = 0;
+  let skippedCount = 0;
+  let failedCount = 0;
+  let movedCount = 0;
+  let deletedCount = 0;
+  let stoppedEarly = false;
+  // Clear potentially stale offsets from the previous implementation.
+  clearLegacyProcessingCursor_(rule, phase);
+  const ordinaryUserLabelIds =
+    phase === 'move' && rule.removePreviousLabels
+      ? getOrdinaryUserLabelIds_()
+      : [];
+  for (let index = 0; index < messageIds.length; index++) {
+    if (workerDeadlineMs && Date.now() >= workerDeadlineMs) {
+      stoppedEarly = true;
+      break;
+    }
+    const messageId = messageIds[index];
+    let action = '';
+    let attemptFailed = false;
+    try {
+      action = processTrackedMessage_(
+        messageId, rule, nowMs, ordinaryUserLabelIds, phase
+      ) || '';
+    } catch (err) {
+      const errorText = err && err.message ? err.message : String(err);
+      if (/quota exceeded|rate limit|user-rate limit/i.test(errorText)) {
+        if (workerDeadlineMs &&
+            Date.now() + CFG.QUOTA_RETRY_WAIT_MS >= workerDeadlineMs) {
+          stoppedEarly = true;
+          break;
+        }
+        Utilities.sleep(CFG.QUOTA_RETRY_WAIT_MS);
+        try {
+          action = processTrackedMessage_(
+            messageId, rule, nowMs, ordinaryUserLabelIds, phase
+          ) || '';
+        } catch (retryErr) {
+          attemptFailed = true;
+          const msg = 'Rule ' + rule.id + ', message ' + messageId +
+            ' failed: ' + (retryErr.message || String(retryErr));
+          console.error(msg);
+          errors.push(msg);
+        }
+      } else {
+        attemptFailed = true;
+        const msg = 'Rule ' + rule.id + ', message ' + messageId +
+          ' failed: ' + errorText;
+        console.error(msg);
+        errors.push(msg);
+      }
+    }
+    examinedCount++;
+    if (phase === 'move') processedCount++;
+    if (attemptFailed) {
+      failedCount++;
+    } else if (action === 'moved') {
+      eligibleCount++;
+      movedCount++;
+    } else if (action === 'deleted') {
+      eligibleCount++;
+      deletedCount++;
+    } else if (action === 'eligible-move' || action === 'eligible-delete') {
+      eligibleCount++;
+    } else {
+      skippedCount++;
+    }
+    if (CFG.MESSAGE_THROTTLE_MS > 0) {
+      Utilities.sleep(CFG.MESSAGE_THROTTLE_MS);
+    }
+  }
+  return {
+    errors: errors,
+    trackedCount: processedCount,
+    examinedCount: examinedCount,
+    eligibleCount: eligibleCount,
+    skippedCount: skippedCount,
+    failedCount: failedCount,
+    movedCount: movedCount,
+    deletedCount: deletedCount,
+    stoppedEarly: stoppedEarly
+  };
+}
+
+function processTrackedMessage_(messageId, rule, nowMs, ordinaryUserLabelIds, phase) {
   const message = Gmail.Users.Messages.get(
     'me',
     messageId,
@@ -1090,8 +1167,12 @@ function processTrackedMessage_(messageId, rule, nowMs, ordinaryUserLabelIds) {
   const movedAlready = labels.indexOf(rule.movedLabelId) !== -1;
   const moveDays = delayToNumber_(rule.moveAfter);
   const deleteDays = delayToNumber_(rule.deleteAfter);
+  const deleteDue = deleteDays !== null && ageMs >= deleteDays * CFG.DAY_MS;
+  // Delete-due messages bypass movement and wait for the deletion pass.
+  if (phase === 'move' && deleteDue) return;
+  if (phase === 'delete' && !deleteDue) return;
   // Delete takes priority when both actions are due.
-  if (deleteDays !== null && ageMs >= deleteDays * CFG.DAY_MS) {
+  if (deleteDue) {
     Gmail.Users.Messages.trash('me', messageId);
     // Cleanup is best-effort. The message is already in Trash, so it is no
     // longer returned by the normal tracking query even if cleanup fails.
@@ -1106,7 +1187,7 @@ function processTrackedMessage_(messageId, rule, nowMs, ordinaryUserLabelIds) {
     } catch (cleanupErr) {
       console.error('Tracking-label cleanup failed: ' + cleanupErr.message);
     }
-    return;
+    return 'deleted';
   }
   if (moveDays === null) {
     return; // Waiting only for deletion.
@@ -1168,6 +1249,7 @@ function processTrackedMessage_(messageId, rule, nowMs, ordinaryUserLabelIds) {
     messageId
   );
 }
+  return 'moved';
 }
 
 /* =========================================================
@@ -1346,8 +1428,32 @@ function getAutomationStatus_() {
       snapshot &&
       Number.isFinite(Number(snapshot.trackedAtRunCount))
         ? String(Number(snapshot.trackedAtRunCount))
-        : '—'
+        : '—',
+    movedAtLastRunCompactText: getDisplayedCountText_(snapshot, 'moved', 'movedAtRunCount'),
+    deletedAtLastRunCompactText: getDisplayedCountText_(snapshot, 'deleted', 'deletedAtRunCount'),
+    examinedAtLastRunCompactText: getSnapshotCountText_(snapshot, 'examinedAtRunCount'),
+    eligibleAtLastRunCompactText: getSnapshotCountText_(snapshot, 'eligibleAtRunCount'),
+    skippedAtLastRunCompactText: getSnapshotCountText_(snapshot, 'skippedAtRunCount'),
+    failedAtLastRunCompactText: getDisplayedCountText_(snapshot, 'failed', 'failedAtRunCount')
   };
+}
+
+// Display the latest manual run, or the cumulative scheduled nighttime runs.
+function getDisplayedCountText_(snapshot, nightlyKey, runKey) {
+  return snapshot && snapshot.lastRunType === 'Manual'
+    ? getSnapshotCountText_(snapshot, runKey)
+    : getNightlyCountText_(snapshot, nightlyKey);
+}
+
+function getNightlyCountText_(snapshot, key) {
+  const totals = snapshot && snapshot.nightlyTotals;
+  return totals && Object.prototype.hasOwnProperty.call(totals, key) &&
+    Number.isFinite(Number(totals[key])) ? String(Number(totals[key])) : '—';
+}
+
+function getSnapshotCountText_(snapshot, key) {
+  return snapshot && Object.prototype.hasOwnProperty.call(snapshot, key) &&
+    Number.isFinite(Number(snapshot[key])) ? String(Number(snapshot[key])) : '—';
 }
 
 function getAutomationHealthSnapshot_() {
@@ -1372,40 +1478,10 @@ function saveAutomationHealthSnapshot_(snapshot) {
 }
 
 function getNextExpectedDailyRunText_(history) {
-  const timeZone = Session.getScriptTimeZone();
-  const now = new Date();
   const currentHour = Number(
-    Utilities.formatDate(now, timeZone, 'H')
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'H')
   );
-  const todayKey =
-    Utilities.formatDate(now, timeZone, 'yyyy-MM-dd');
-  const dailyRanToday = (history || []).some(entry => {
-    if (
-      entry.runType !== 'Daily' ||
-      !entry.startedAt
-    ) {
-      return false;
-    }
-    const date = new Date(entry.startedAt);
-    if (isNaN(date.getTime())) return false;
-    return (
-      Utilities.formatDate(
-        date,
-        timeZone,
-        'yyyy-MM-dd'
-      ) === todayKey
-    );
-  });
-  if (currentHour < 2) {
-    return 'Today, 2–3 AM';
-  }
-  if (
-    currentHour === 2 &&
-    !dailyRanToday
-  ) {
-    return 'Today, 2–3 AM';
-  }
-  return 'Tomorrow, 2–3 AM';
+  return (currentHour < 5 ? 'Today' : 'Tomorrow') + ', 2–5 AM';
 }
 
 /* =========================================================
@@ -1425,8 +1501,7 @@ function ensureDailyTrigger_() {
   if (dailyTriggerExists_()) return;
   ScriptApp.newTrigger(CFG.TRIGGER_FUNCTION)
     .timeBased()
-    .everyDays(1)
-    .atHour(2)
+    .everyHours(1)
     .create();
 }
 
