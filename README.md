@@ -1,10 +1,10 @@
 # Gmail_Filter
-Outlook style eMail filtering for Gmail. This code package adds an add-on to a Gmail account to implement delayed email filtering similar to Outlook.   It automates delayed filtering as well as deletion of emails.  It is portable.  More details are in the README files. 
+Outlook-style email filtering for Gmail. This code package adds an add-on to a Gmail account to implement delayed email filtering similar to Outlook.   It automates delayed filtering as well as deletion of emails.  It is portable.  More details are in the README files. 
 
 OVERVIEW
 - Gmail's built-in filters act immediately; it does not have delay or delete automation.  
 - Mail Filter adds delayed move/archive and Trash actions.
-- Set Move and Delete delays independently: 1, 5, 10, 50, 100 days, or Never.
+- Set Move and Delete delays independently: 1, 5, 10, 100, 365 days, or Never.
 - Delays use the email's original received date.
 - Match by sender and/or words, optionally require an attachment; apply rules to existing emails; optionally remove previous labels.
 - View rules, automation status, and execution history. Trash is not permanent deletion.
@@ -22,3 +22,4 @@ DOCUMENTATION
 - README_01_Current_Version.md — Features and behavior.
 - README_02_Logic_Update_Guide.md — Code and maintenance.
 - README_03_Install_StepByStep_Guide.md — Detailed fresh installation.
+- README_04_Updates_v3.0.md - Details of recent update
